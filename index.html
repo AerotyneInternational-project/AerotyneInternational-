@@ -10,16 +10,49 @@
             width: 80%;
             margin: 0 auto;
         }
+        .date-controls {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 20px;
+        }
+        .date-input {
+            padding: 8px;
+            border-radius: 4px;
+            border: 1px solid #ccc;
+        }
+        .update-btn {
+            background-color: #4CAF50;
+            color: white;
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
     </style>
 </head>
 <body>
     <div class="chart-container">
         <h1>Natural Gas Price Chart</h1>
+        <div class="date-controls">
+            <div>
+                <label for="startDate">Start Date: </label>
+                <input type="date" id="startDate" class="date-input">
+            </div>
+            <div>
+                <label for="endDate">End Date: </label>
+                <input type="date" id="endDate" class="date-input">
+            </div>
+            <button id="updateChart" class="update-btn">Update Chart</button>
+        </div>
         <canvas id="priceChart"></canvas>
     </div>
 
     <script>
-        // Your JavaScript code will go here
+        // Global variable to store the chart instance
+        let naturalGasChart;
+        // Global variable to store all fetched data
+        let allChartData = [];
+
         async function fetchNaturalGasData() {
             const apiKey = 'JRTtd54Ar23G1YyCF2CFADaqOQJPvFmMts4Dt7bH'; // Replace with your actual API key
             const endpoint = 'https://api.eia.gov/v2/natural-gas/pri/fut/data/?frequency=daily&data[0]=value&facets[series][]=RNGWHHD&sort[0][column]=period&sort[0][direction]=desc&offset=0&length=5000';
@@ -43,20 +76,39 @@
             })).reverse(); // Reverse to show oldest first
         }
 
-        async function createChart() {
-            const rawData = await fetchNaturalGasData();
-            const chartData = processData(rawData);
+        function filterDataByDate(data, startDate, endDate) {
+            if (!startDate && !endDate) return data;
             
+            const start = startDate ? new Date(startDate) : null;
+            const end = endDate ? new Date(endDate) : null;
+            
+            return data.filter(item => {
+                const itemDate = new Date(item.x);
+                const afterStart = !start || itemDate >= start;
+                const beforeEnd = !end || itemDate <= end;
+                return afterStart && beforeEnd;
+            });
+        }
+
+        function createChart(data) {
             const ctx = document.getElementById('priceChart').getContext('2d');
-            const chart = new Chart(ctx, {
+            
+            if (naturalGasChart) {
+                naturalGasChart.destroy();
+            }
+            
+            naturalGasChart = new Chart(ctx, {
                 type: 'line',
                 data: {
                     datasets: [{
                         label: 'Henry Hub Natural Gas Spot Price (Dollars per Million Btu)',
-                        data: chartData,
+                        data: data,
                         borderColor: 'rgb(75, 192, 192)',
+                        backgroundColor: 'rgba(75, 192, 192, 0.1)',
                         tension: 0.1,
-                        fill: false
+                        fill: true,
+                        pointRadius: 2,
+                        pointHoverRadius: 5
                     }]
                 },
                 options: {
@@ -65,7 +117,12 @@
                         x: {
                             type: 'time',
                             time: {
-                                unit: 'month'
+                                unit: 'month',
+                                tooltipFormat: 'MMM D, YYYY'
+                            },
+                            title: {
+                                display: true,
+                                text: 'Date'
                             }
                         },
                         y: {
@@ -80,6 +137,9 @@
                             callbacks: {
                                 label: function(context) {
                                     return `$${context.parsed.y.toFixed(2)}`;
+                                },
+                                title: function(context) {
+                                    return moment(context[0].parsed.x).format('MMM D, YYYY');
                                 }
                             }
                         }
@@ -88,7 +148,37 @@
             });
         }
 
-        createChart();
+        function setInitialDateRange(data) {
+            if (data.length === 0) return;
+            
+            const firstDate = new Date(data[0].x);
+            const lastDate = new Date(data[data.length - 1].x);
+            
+            document.getElementById('startDate').valueAsDate = firstDate;
+            document.getElementById('endDate').valueAsDate = lastDate;
+        }
+
+        async function initializeChart() {
+            const rawData = await fetchNaturalGasData();
+            allChartData = processData(rawData);
+            
+            if (allChartData.length > 0) {
+                setInitialDateRange(allChartData);
+                createChart(allChartData);
+            }
+        }
+
+        // Event listener for the update button
+        document.getElementById('updateChart').addEventListener('click', function() {
+            const startDate = document.getElementById('startDate').value;
+            const endDate = document.getElementById('endDate').value;
+            
+            const filteredData = filterDataByDate(allChartData, startDate, endDate);
+            createChart(filteredData);
+        });
+
+        // Initialize the chart when the page loads
+        window.addEventListener('load', initializeChart);
     </script>
 </body>
 </html>
