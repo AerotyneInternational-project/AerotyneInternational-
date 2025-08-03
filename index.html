@@ -5,77 +5,286 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/moment"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-moment"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom"></script>
     <style>
         .chart-container {
-            width: 80%;
+            width: 90%;
             margin: 0 auto;
         }
-        .date-controls {
+        .controls {
             display: flex;
             justify-content: space-between;
             margin-bottom: 20px;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+        .date-range, .interval-selector {
+            display: flex;
+            gap: 15px;
+            align-items: center;
         }
         .date-input {
             padding: 8px;
             border-radius: 4px;
             border: 1px solid #ccc;
         }
-        .update-btn {
+        select {
+            padding: 8px;
+            border-radius: 4px;
+        }
+        button {
             background-color: #4CAF50;
             color: white;
             padding: 8px 16px;
             border: none;
             border-radius: 4px;
             cursor: pointer;
+            transition: background-color 0.3s;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        .chart-tooltip {
+            background: rgba(0, 0, 0, 0.7);
+            border-radius: 4px;
+            color: white;
+            padding: 8px;
+            pointer-events: none;
+            position: absolute;
+            z-index: 100;
+            display: none;
         }
     </style>
 </head>
 <body>
     <div class="chart-container">
         <h1>Natural Gas Price Chart</h1>
-        <div class="date-controls">
-            <div>
-                <label for="startDate">Start Date: </label>
-                <input type="date" id="startDate" class="date-input">
+        <div class="controls">
+            <div class="date-range">
+                <div>
+                    <label for="startDate">From: </label>
+                    <input type="date" id="startDate" class="date-input">
+                </div>
+                <div>
+                    <label for="endDate">To: </label>
+                    <input type="date" id="endDate" class="date-input">
+                </div>
             </div>
-            <div>
-                <label for="endDate">End Date: </label>
-                <input type="date" id="endDate" class="date-input">
+            <div class="interval-selector">
+                <label for="interval">Interval: </label>
+                <select id="interval">
+                    <option value="day">Daily</option>
+                    <option value="week">Weekly</option>
+                </select>
+                <button id="updateChart">Update</button>
             </div>
-            <button id="updateChart" class="update-btn">Update Chart</button>
         </div>
         <canvas id="priceChart"></canvas>
+        <div id="hourlyTooltip" class="chart-tooltip"></div>
     </div>
 
     <script>
-        // Global variable to store the chart instance
+        // Global variables
         let naturalGasChart;
-        // Global variable to store all fetched data
         let allChartData = [];
+        let hourlyData = {}; // Store hourly data for tooltips
 
+        // Configuration
+        const config = {
+            apiKey: 'JRTtd54Ar23G1YyCF2CFADaqOQJPvFmMts4Dt7bH', // Replace with your EIA API key
+            initialDaysToShow: 30,  // Default days to show initially
+            colors: {
+                line: 'rgba(54, 162, 235, 1)',
+                fill: 'rgba(54, 162, 235, 0.1)',
+                point: 'rgba(54, 162, 235, 1)',
+                pointHover: 'rgba(255, 99, 132, 1)'
+            }
+        };
+
+        // DOM Elements
+        const elements = {
+            chart: document.getElementById('priceChart'),
+            startDate: document.getElementById('startDate'),
+            endDate: document.getElementById('endDate'),
+            interval: document.getElementById('interval'),
+            updateBtn: document.getElementById('updateChart'),
+            tooltip: document.getElementById('hourlyTooltip')
+        };
+
+        // Fetch data from EIA API
         async function fetchNaturalGasData() {
-            const apiKey = 'JRTtd54Ar23G1YyCF2CFADaqOQJPvFmMts4Dt7bH'; // Replace with your actual API key
-            const endpoint = 'https://api.eia.gov/v2/natural-gas/pri/fut/data/?frequency=daily&data[0]=value&facets[series][]=RNGWHHD&sort[0][column]=period&sort[0][direction]=desc&offset=0&length=5000';
+            const endpoint = `https://api.eia.gov/v2/natural-gas/pri/fut/data/?frequency=daily&data[0]=value&facets[series][]=RNGWHHD&sort[0][column]=period&sort[0][direction]=desc&offset=0&length=5000&api_key=${config.apiKey}`;
             
             try {
-                const response = await fetch(`${endpoint}&api_key=${apiKey}`);
-                const data = await response.json();
-                return data;
+                const response = await fetch(endpoint);
+                return await response.json();
             } catch (error) {
                 console.error('Error fetching data:', error);
                 return null;
             }
         }
 
+        // Process API data into chart format
         function processData(apiData) {
-            if (!apiData || !apiData.response || !apiData.response.data) return [];
+            if (!apiData?.response?.data) return [];
             
             return apiData.response.data.map(item => ({
                 x: new Date(item.period),
-                y: item.value
-            })).reverse(); // Reverse to show oldest first
+                y: item.value,
+                // Generate hourly data points for tooltips (simulated)
+                hourly: generateHourlyData(item.value, new Date(item.period))
+            })).reverse();
         }
 
+        // Simulate hourly data for demonstration
+        function generateHourlyData(dailyValue, date) {
+            const hourly = [];
+            for (let hour = 0; hour < 24; hour++) {
+                // Simulate price fluctuations throughout the day
+                const fluctuation = (Math.random() * 0.2 - 0.1) * dailyValue;
+                hourly.push({
+                    hour: hour,
+                    value: dailyValue + fluctuation,
+                    time: new Date(date.setHours(hour, 0, 0, 0))
+                });
+            }
+            return hourly;
+        }
+
+        // Create or update the chart
+        function createChart(data, interval = 'day') {
+            const ctx = elements.chart.getContext('2d');
+            
+            if (naturalGasChart) {
+                naturalGasChart.destroy();
+            }
+            
+            // Determine unit based on selected interval
+            const timeUnit = interval === 'week' ? 'week' : 'day';
+            const tooltipFormat = interval === 'week' ? 'MMM D, YYYY' : 'MMM D, YYYY [at] HH:mm';
+            
+            naturalGasChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    datasets: [{
+                        label: 'Henry Hub Natural Gas Spot Price',
+                        data: data,
+                        borderColor: config.colors.line,
+                        backgroundColor: config.colors.fill,
+                        tension: 0.1,
+                        fill: true,
+                        pointRadius: 3,
+                        pointHoverRadius: 6,
+                        pointBackgroundColor: config.colors.point,
+                        pointHoverBackgroundColor: config.colors.pointHover,
+                        borderWidth: 2
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: {
+                                unit: timeUnit,
+                                tooltipFormat: tooltipFormat,
+                                displayFormats: {
+                                    day: 'MMM D',
+                                    week: 'MMM D'
+                                }
+                            },
+                            title: {
+                                display: true,
+                                text: 'Date'
+                            },
+                            grid: {
+                                display: false
+                            }
+                        },
+                        y: {
+                            title: {
+                                display: true,
+                                text: 'Price (Dollars per Million Btu)'
+                            },
+                            ticks: {
+                                callback: function(value) {
+                                    return '$' + value.toFixed(2);
+                                }
+                            }
+                        }
+                    },
+                    plugins: {
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    return `$${context.parsed.y.toFixed(2)}`;
+                                },
+                                title: function(context) {
+                                    return moment(context[0].parsed.x).format('MMM D, YYYY');
+                                }
+                            }
+                        },
+                        zoom: {
+                            zoom: {
+                                wheel: {
+                                    enabled: true
+                                },
+                                pinch: {
+                                    enabled: true
+                                },
+                                mode: 'xy'
+                            },
+                            pan: {
+                                enabled: true,
+                                mode: 'xy'
+                            }
+                        }
+                    },
+                    interaction: {
+                        intersect: false,
+                        mode: 'index'
+                    },
+                    onHover: (event, chartElements) => {
+                        if (chartElements.length > 0) {
+                            showHourlyTooltip(event, chartElements[0]);
+                        } else {
+                            elements.tooltip.style.display = 'none';
+                        }
+                    }
+                }
+            });
+        }
+
+        // Show hourly data in tooltip when hovering
+        function showHourlyTooltip(event, element) {
+            const dataPoint = naturalGasChart.data.datasets[0].data[element.index];
+            
+            if (!dataPoint.hourly) return;
+            
+            // Create tooltip content
+            let tooltipContent = `<strong>${moment(dataPoint.x).format('MMM D, YYYY')}</strong><br>`;
+            tooltipContent += '<div style="max-height: 200px; overflow-y: auto;">';
+            tooltipContent += '<table style="width: 100%; border-collapse: collapse;">';
+            tooltipContent += '<tr><th>Time</th><th>Price</th></tr>';
+            
+            dataPoint.hourly.forEach(hour => {
+                tooltipContent += `<tr>
+                    <td>${moment(hour.time).format('HH:mm')}</td>
+                    <td>$${hour.value.toFixed(2)}</td>
+                </tr>`;
+            });
+            
+            tooltipContent += '</table></div>';
+            
+            // Position and show tooltip
+            elements.tooltip.innerHTML = tooltipContent;
+            elements.tooltip.style.display = 'block';
+            elements.tooltip.style.left = (event.clientX + 10) + 'px';
+            elements.tooltip.style.top = (event.clientY + 10) + 'px';
+        }
+
+        // Filter data by date range
         function filterDataByDate(data, startDate, endDate) {
             if (!startDate && !endDate) return data;
             
@@ -90,94 +299,50 @@
             });
         }
 
-        function createChart(data) {
-            const ctx = document.getElementById('priceChart').getContext('2d');
-            
-            if (naturalGasChart) {
-                naturalGasChart.destroy();
-            }
-            
-            naturalGasChart = new Chart(ctx, {
-                type: 'line',
-                data: {
-                    datasets: [{
-                        label: 'Henry Hub Natural Gas Spot Price (Dollars per Million Btu)',
-                        data: data,
-                        borderColor: 'rgb(75, 192, 192)',
-                        backgroundColor: 'rgba(75, 192, 192, 0.1)',
-                        tension: 0.1,
-                        fill: true,
-                        pointRadius: 2,
-                        pointHoverRadius: 5
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    scales: {
-                        x: {
-                            type: 'time',
-                            time: {
-                                unit: 'month',
-                                tooltipFormat: 'MMM D, YYYY'
-                            },
-                            title: {
-                                display: true,
-                                text: 'Date'
-                            }
-                        },
-                        y: {
-                            title: {
-                                display: true,
-                                text: 'Price (Dollars per Million Btu)'
-                            }
-                        }
-                    },
-                    plugins: {
-                        tooltip: {
-                            callbacks: {
-                                label: function(context) {
-                                    return `$${context.parsed.y.toFixed(2)}`;
-                                },
-                                title: function(context) {
-                                    return moment(context[0].parsed.x).format('MMM D, YYYY');
-                                }
-                            }
-                        }
-                    }
-                }
-            });
-        }
-
+        // Set initial date range
         function setInitialDateRange(data) {
             if (data.length === 0) return;
             
-            const firstDate = new Date(data[0].x);
-            const lastDate = new Date(data[data.length - 1].x);
+            const endDate = new Date(data[data.length - 1].x);
+            const startDate = new Date(endDate);
+            startDate.setDate(startDate.getDate() - config.initialDaysToShow);
             
-            document.getElementById('startDate').valueAsDate = firstDate;
-            document.getElementById('endDate').valueAsDate = lastDate;
+            elements.startDate.valueAsDate = startDate;
+            elements.endDate.valueAsDate = endDate;
         }
 
+        // Initialize the chart
         async function initializeChart() {
             const rawData = await fetchNaturalGasData();
             allChartData = processData(rawData);
             
             if (allChartData.length > 0) {
                 setInitialDateRange(allChartData);
-                createChart(allChartData);
+                const filteredData = filterDataByDate(
+                    allChartData,
+                    elements.startDate.value,
+                    elements.endDate.value
+                );
+                createChart(filteredData, elements.interval.value);
             }
         }
 
-        // Event listener for the update button
-        document.getElementById('updateChart').addEventListener('click', function() {
-            const startDate = document.getElementById('startDate').value;
-            const endDate = document.getElementById('endDate').value;
-            
-            const filteredData = filterDataByDate(allChartData, startDate, endDate);
-            createChart(filteredData);
+        // Event listeners
+        elements.updateBtn.addEventListener('click', function() {
+            const filteredData = filterDataByDate(
+                allChartData,
+                elements.startDate.value,
+                elements.endDate.value
+            );
+            createChart(filteredData, elements.interval.value);
         });
 
-        // Initialize the chart when the page loads
+        // Hide tooltip when mouse leaves chart
+        elements.chart.addEventListener('mouseout', function() {
+            elements.tooltip.style.display = 'none';
+        });
+
+        // Initialize on page load
         window.addEventListener('load', initializeChart);
     </script>
 </body>
